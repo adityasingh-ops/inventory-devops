@@ -21,7 +21,7 @@ Developer → Git/GitHub → GitHub Actions (test → build → Trivy scan → p
 | CI/CD          | GitHub Actions                           | `.github/workflows/ci-cd.yml`  |
 | Security       | Trivy image scan                         | in the workflow                |
 | Registry       | GitHub Container Registry (GHCR)         | in the workflow                |
-| Infrastructure | Terraform (VPC + EKS)                    | `terraform/`                   |
+| Infrastructure | Terraform (VPC + EKS; free mode = VPC only)                  | `terraform/`                   |
 | Kubernetes     | Namespace, Deployments, Services, Ingress, HPA | `k8s/`, `helm/inventory/` |
 | Monitoring     | Prometheus + Grafana (kube-prometheus-stack) | `monitoring/`, `helm/inventory/templates/monitoring.yaml` |
 | Troubleshooting| Deliberately broken manifests            | `troubleshooting/`             |
@@ -115,32 +115,35 @@ Stop with `docker compose down` (add `-v` to also delete the DB data).
 git init            # skip if already done
 git add .
 git commit -m "Add inventory app with full DevOps pipeline"
+gh auth login                      # log in as adityasingh-ops (check with: gh auth status)
 gh repo create inventory-devops --public --source=. --push
 ```
 
 Use clear commit messages (for example "Add HPA for backend", not "update").
 The rubric wants at least 10 commits, so commit each change as you make it.
 
-## 4. CI/CD + Trivy + GHCR
+## 4. CI/CD + Trivy + GHCR + Kubernetes deploy (all free)
 
 Pushing to `main` runs the pipeline. Open the **Actions** tab on GitHub:
 
 1. **test**: `npm test` and the frontend build. If a test fails, the pipeline stops here.
-2. **build-scan-push**: builds both images, scans them with **Trivy** (fails on fixable HIGH/CRITICAL CVEs), then pushes them to `ghcr.io/<you>/inventory-backend:<commit-sha>`.
-3. **deploy**: runs `helm upgrade` on EKS. It skips itself until you add the AWS secrets in step 6.
+2. **build-scan-push**: builds both images, scans them with **Trivy** (fails on fixable HIGH/CRITICAL CVEs), then pushes them to `ghcr.io/adityasingh-ops/inventory-backend:<commit-sha>`.
+3. **deploy**: creates a throwaway Kubernetes cluster (kind) inside the CI runner, runs `helm upgrade --install` with the new images, waits for the pods, then smoke-tests the API. It's free and needs no secrets.
 
 After the first green run, go to your GitHub profile → **Packages**. For **each** of the two packages, open
-**Package settings → Change visibility → Public**, so Kubernetes can pull them without a password.
+**Package settings → Change visibility → Public**, so your minikube (step 5) can pull them.
 
-📸 the green pipeline, the Trivy output (expand the scan step), and the GHCR package page showing SHA tags.
+📸 the green pipeline, the Trivy output (expand "Trivy scan"), the deploy step's `kubectl get pods` output, and the GHCR package page showing SHA tags.
 
 To show that CI catches bugs: break a test, push, and watch the pipeline go red before any image is built.
 
-## 5. Kubernetes + Helm locally (minikube, free)
-
-Do everything here on your laptop before you spend money on AWS.
+## 5. Kubernetes + Helm on your laptop (minikube, free)
 
 ```bash
+brew install minikube helm          # kubectl comes with Docker Desktop
+
+# Docker Desktop → Settings → Resources: set Memory to 8 GB first (the default 4 GB is too small
+# for the app + Prometheus/Grafana + a load test), then:
 minikube start --cpus 4 --memory 6g
 minikube addons enable ingress
 minikube addons enable metrics-server        # needed by the HPA
@@ -151,14 +154,14 @@ helm repo update
 helm install monitoring prometheus-community/kube-prometheus-stack \
   -n monitoring --create-namespace -f monitoring/prometheus-values.yaml
 
-# 5b. Build the images inside minikube
-minikube image build -t inventory-backend:local ./backend
-minikube image build -t inventory-frontend:local ./frontend
-
-# 5c. Deploy the app
+# 5b. Deploy the app with the images CI pushed to GHCR
 kubectl apply -f k8s/namespace.yaml
-helm upgrade --install inventory ./helm/inventory -n inventory -f helm/inventory/values-local.yaml
+./scripts/deploy-local.sh           # uses the latest commit SHA on origin/main
 ```
+
+(Before you have pushed to GitHub, you can use locally built images instead:
+`minikube image build -t inventory-backend:local ./backend`, the same for `frontend`, then
+`helm upgrade --install inventory ./helm/inventory -n inventory -f helm/inventory/values-local.yaml`.)
 
 Check it:
 
@@ -170,7 +173,7 @@ kubectl get hpa -n inventory
 helm list -n inventory              # 📸
 ```
 
-Open it through the Ingress. Run this in a **separate terminal** and leave it running:
+Open it through the Ingress. Run this in a **separate terminal** and leave it running (it asks for your Mac password):
 
 ```bash
 minikube tunnel
@@ -178,20 +181,30 @@ minikube tunnel
 
 Then open **http://localhost**: `/` goes to the frontend and `/api` goes to the backend. 📸
 
+### Live demo: commit → pipeline → deployment updates
+
+1. Change the `<h1>` text in `frontend/index.html`.
+2. `git commit -am "Change dashboard heading" && git push`
+3. Show the Actions tab: test → build → Trivy → push → deploy, all green.
+4. When it's done: `git pull && ./scripts/deploy-local.sh`. Watch `kubectl get pods -n inventory -w` as the old pods are replaced.
+5. Refresh http://localhost to see the new heading. `helm history inventory -n inventory` shows a new revision.
+
+Rollback: `helm rollback inventory <previous-revision> -n inventory`.
+
 ### HPA (autoscaling)
 
 ```bash
-kubectl get hpa -n inventory -w                         # terminal 1: watch
-URL=http://localhost/api/items ./scripts/load-test.sh   # terminal 2: load
+kubectl get hpa -n inventory -w     # terminal 1: watch
+./scripts/load-test.sh              # terminal 2: a busybox pod hammers the backend for 3 minutes
 ```
 
-When backend CPU goes above 50%, REPLICAS climbs from 2 toward 5, then drops back a few minutes after the load stops.
+When backend CPU goes above 50%, REPLICAS climbs from 2 toward 5, then drops back a few minutes after the load stops. 📸
 
 ### Prometheus + Grafana
 
 ```bash
 kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090:9090
-# http://localhost:9090/targets → find "serviceMonitor/inventory/backend", it should be UP   📸
+# http://localhost:9090/targets → "serviceMonitor/inventory/backend" should be UP   📸
 
 kubectl port-forward -n monitoring svc/monitoring-grafana 3001:80
 # http://localhost:3001  (login admin / admin)
@@ -203,8 +216,8 @@ Run the load test again and watch the graphs move.
 Screenshot of the `/metrics` output:
 
 ```bash
-kubectl port-forward -n inventory svc/backend 3000:3000
-curl localhost:3000/metrics | grep http_requests_total     # 📸
+kubectl port-forward -n inventory svc/backend 4000:3000
+curl localhost:4000/metrics | grep http_requests_total     # 📸
 ```
 
 ### Troubleshooting lab
@@ -212,8 +225,8 @@ curl localhost:3000/metrics | grep http_requests_total     # 📸
 ```bash
 # Lab 1: bad image
 kubectl apply -f troubleshooting/broken-image.yaml
-kubectl get pods -n inventory                   # STATUS = ImagePullBackOff
-kubectl describe pod -n inventory -l app=broken-image   # Events: "not found"
+kubectl get pods -n inventory                           # STATUS = ErrImagePull / ImagePullBackOff
+kubectl describe pod -n inventory -l app=broken-image   # Events explain why
 kubectl delete -f troubleshooting/broken-image.yaml
 
 # Lab 2: Service whose selector matches no pods
@@ -225,27 +238,58 @@ kubectl delete -f troubleshooting/broken-service.yaml
 
 Other useful commands: `kubectl logs -n inventory deploy/backend`, `kubectl get events -n inventory --sort-by=.lastTimestamp`.
 
-Rollback with Helm: `helm history inventory -n inventory`, then `helm rollback inventory 1 -n inventory`.
+Stop everything with `minikube stop` (keeps the cluster) or `minikube delete` (removes it).
 
-## 6. AWS with Terraform (real cluster, costs money)
+## 6. Terraform on AWS: the free demo
 
-> ⚠️ EKS + NAT gateway + 2 × t3.medium costs about **$5–6 per day**. Run `terraform destroy` as soon as you have your screenshots.
+EKS and NAT gateways are **not** free tier. The default `terraform.tfvars.example` therefore sets
+`create_eks = false` and `enable_nat_gateway = false`. Terraform then creates only the VPC, 2 public and 2 private subnets,
+route tables and an internet gateway. Those cost **$0**.
+`terraform plan` still shows the EKS design in code, and the app itself runs on Kubernetes in minikube and in CI.
+
+### One-time AWS setup
+
+1. Create a free AWS account. In **Billing → Budgets**, create a **$1 zero-spend budget** so AWS emails you if anything starts costing money.
+2. In **IAM → Users → Create user** (for example `terraform`), attach the `AdministratorAccess` policy.
+   Then go to **Security credentials → Create access key → CLI**.
+3. On your Mac:
 
 ```bash
-aws configure                      # your IAM user's keys (never put them in git)
+brew install terraform awscli
+aws configure            # paste the access key + secret, region ap-south-1, output json
+aws sts get-caller-identity     # should print your account id
+```
+
+The keys live in `~/.aws/credentials` and never go into git.
+
+### Run it
+
+```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars
-terraform init
-terraform plan                     # 📸
-terraform apply                    # about 15 minutes
-$(terraform output -raw configure_kubectl)     # points kubectl at EKS
-kubectl get nodes                  # 2 nodes Ready
+cp terraform.tfvars.example terraform.tfvars    # create_eks = false, enable_nat_gateway = false
+terraform init                                  # 📸
+terraform plan                                  # 📸
+terraform apply                                 # type "yes"
+```
+
+📸 AWS Console → **VPC** (region Mumbai / ap-south-1) → `inventory-vpc` with its 4 subnets.
+
+```bash
+terraform destroy                               # type "yes"   📸
 cd ..
 ```
 
-📸 AWS Console: VPC → `inventory-vpc`, and EKS → `inventory-eks` (region ap-south-1).
+### Optional: the real EKS cluster (costs about $5–6 per day)
 
-Install the cluster add-ons, then the app (it uses the GHCR images that CI pushed):
+Only do this if you want an EKS screenshot, and destroy it the same day.
+Set `create_eks = true` and `enable_nat_gateway = true` in `terraform.tfvars`, run `terraform apply` (about 15 minutes), and then:
+
+```bash
+$(terraform output -raw configure_kubectl)      # points kubectl at EKS
+kubectl get nodes
+```
+
+Install the add-ons and the app:
 
 ```bash
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
@@ -253,38 +297,15 @@ helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
 helm repo update
 helm install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx --create-namespace
 helm install metrics-server metrics-server/metrics-server -n kube-system
-helm install monitoring prometheus-community/kube-prometheus-stack \
-  -n monitoring --create-namespace -f monitoring/prometheus-values.yaml
-
+helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace -f monitoring/prometheus-values.yaml
 kubectl apply -f k8s/namespace.yaml
-helm upgrade --install inventory ./helm/inventory -n inventory \
-  -f helm/inventory/values-eks.yaml \
-  --set backend.image=ghcr.io/<your-github-username>/inventory-backend \
-  --set frontend.image=ghcr.io/<your-github-username>/inventory-frontend \
-  --set backend.tag=<commit-sha> --set frontend.tag=<commit-sha>
-
-kubectl get ingress -n inventory   # ADDRESS = an AWS load balancer hostname; open it in the browser 📸
+helm upgrade --install inventory ./helm/inventory -n inventory -f helm/inventory/values-eks.yaml \
+  --set backend.image=ghcr.io/adityasingh-ops/inventory-backend --set backend.tag=$(git rev-parse HEAD) \
+  --set frontend.image=ghcr.io/adityasingh-ops/inventory-frontend --set frontend.tag=$(git rev-parse HEAD)
+kubectl get ingress -n inventory                # ADDRESS = load balancer URL
 ```
 
-All the `kubectl`, HPA, Grafana and troubleshooting checks from step 5 work the same way here.
-
-### Auto-deploy from CI (the live demo)
-
-On GitHub, go to repo → Settings → Secrets and variables → Actions, and add `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
-The workflow assumes region `ap-south-1` and cluster `inventory-eks`.
-If you created the cluster with a different IAM user, also give that user access to the cluster.
-
-**Live demo:** change the `<h1>` text in `frontend/index.html`, then commit and push.
-Watch the pipeline (test → build → scan → push → deploy), then refresh the load balancer URL to see the new heading.
-You can also run `kubectl get pods -n inventory -w` to watch the old pods get replaced.
-
-### Tear down (do not skip!)
-
-```bash
-helm uninstall inventory -n inventory
-helm uninstall ingress-nginx -n ingress-nginx   # deletes the AWS load balancer. Do this BEFORE destroy, or destroy gets stuck on the VPC
-cd terraform && terraform destroy               # 📸
-```
+Then tear it down. Run `helm uninstall ingress-nginx -n ingress-nginx` **first**, because it deletes the AWS load balancer and otherwise destroy gets stuck. Then run `terraform destroy`.
 
 ---
 

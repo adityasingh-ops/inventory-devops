@@ -3,7 +3,21 @@ const fs = require('fs');
 const path = require('path');
 const db = require('./db');
 
+// Wait for Postgres to accept connections (it may start after the backend)
+async function waitForDb(retries = 30) {
+  for (let i = 1; ; i++) {
+    try {
+      return await db.query('SELECT 1');
+    } catch (err) {
+      if (i >= retries) throw err;
+      console.log(`Database not ready (${err.message}), retry ${i}/${retries}...`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+}
+
 async function migrate() {
+  await waitForDb();
   await db.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
     name TEXT PRIMARY KEY,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

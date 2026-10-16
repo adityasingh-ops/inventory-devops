@@ -22,7 +22,7 @@ async function load() {
       const li = document.createElement('li');
       li.innerHTML = `
         <span class="name"></span>
-        <button class="small" data-change="-1">−</button>
+        <button class="small" data-change="-1">-</button>
         <strong>${item.quantity}</strong>
         <button class="small" data-change="1">+</button>
         <button class="small delete">Delete</button>`;

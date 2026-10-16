@@ -1,5 +1,5 @@
 output "cluster_name" {
-  value = module.eks.cluster_name
+  value = var.create_eks ? module.eks.cluster_name : "EKS not created"
 }
 
 output "vpc_id" {
@@ -7,5 +7,5 @@ output "vpc_id" {
 }
 
 output "configure_kubectl" {
-  value = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}"
+  value = "aws eks update-kubeconfig --name ${var.cluster_name} --region ${var.aws_region}"
 }

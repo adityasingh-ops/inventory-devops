@@ -10,7 +10,7 @@ module "vpc" {
   public_subnets  = ["10.20.101.0/24", "10.20.102.0/24"]
   private_subnets = ["10.20.1.0/24", "10.20.2.0/24"]
 
-  enable_nat_gateway = true
+  enable_nat_gateway = var.enable_nat_gateway
   single_nat_gateway = true # one NAT = cheaper
 
   # tags so Kubernetes can place load balancers in the right subnets
@@ -22,6 +22,8 @@ module "vpc" {
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "20.37.1"
+
+  create = var.create_eks
 
   cluster_name    = var.cluster_name
   cluster_version = var.cluster_version

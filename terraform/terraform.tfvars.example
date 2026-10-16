@@ -4,3 +4,8 @@ aws_region         = "ap-south-1"
 cluster_name       = "inventory-eks"
 cluster_version    = "1.33"
 node_instance_type = "t3.medium"
+
+# FREE demo (VPC + subnets only, $0):   create_eks = false, enable_nat_gateway = false
+# Full EKS (costs ~$5-6/day):          create_eks = true,  enable_nat_gateway = true
+create_eks         = false
+enable_nat_gateway = false

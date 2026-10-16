@@ -1,0 +1,88 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # 1) TEST: unit tests + frontend build. If this fails, nothing gets built or pushed.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Backend tests
+        working-directory: backend
+        run: |
+          npm ci
+          npm test
+      - name: Frontend build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+  # 2) BUILD + SCAN + PUSH: Docker images tagged with the commit SHA
+  build-scan-push:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set image names (GHCR needs lowercase)
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "BACKEND_IMAGE=ghcr.io/$OWNER/inventory-backend:${{ github.sha }}" >> $GITHUB_ENV
+          echo "FRONTEND_IMAGE=ghcr.io/$OWNER/inventory-frontend:${{ github.sha }}" >> $GITHUB_ENV
+      - name: Build images
+        run: |
+          docker build -t $BACKEND_IMAGE ./backend
+          docker build -t $FRONTEND_IMAGE ./frontend
+      - name: Trivy scan (fails on fixable HIGH/CRITICAL CVEs)
+        run: |
+          for IMG in $BACKEND_IMAGE $FRONTEND_IMAGE; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.58.1 \
+              image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 $IMG
+          done
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Push images
+        run: |
+          docker push $BACKEND_IMAGE
+          docker push $FRONTEND_IMAGE
+
+  # 3) DEPLOY: helm upgrade on EKS (only runs when AWS secrets are configured)
+  deploy:
+    needs: build-scan-push
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ap-south-1
+      CLUSTER_NAME: inventory-eks
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy with Helm
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            echo "AWS secrets not set - skipping deploy"; exit 0
+          fi
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
+          helm upgrade --install inventory ./helm/inventory \
+            -n inventory --create-namespace \
+            -f helm/inventory/values-eks.yaml \
+            --set backend.image=ghcr.io/$OWNER/inventory-backend \
+            --set frontend.image=ghcr.io/$OWNER/inventory-frontend \
+            --set backend.tag=${{ github.sha }} \
+            --set frontend.tag=${{ github.sha }} \
+            --wait --timeout 5m
+          kubectl get pods -n inventory

@@ -1,0 +1,5 @@
+apiVersion: v2
+name: inventory
+description: Inventory app (Node.js backend + Nginx frontend + Postgres)
+version: 1.0.0
+appVersion: "1.0.0"

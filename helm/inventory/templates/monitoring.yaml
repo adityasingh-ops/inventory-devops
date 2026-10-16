@@ -1,0 +1,25 @@
+{{- if and .Values.monitoring.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+# Tells Prometheus to scrape the backend's /metrics endpoint every 15s
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend
+spec:
+  selector:
+    matchLabels: { app: backend }
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+---
+# Grafana auto-loads ConfigMaps with this label as a dashboard
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inventory-dashboard
+  labels:
+    grafana_dashboard: "1"
+data:
+  inventory.json: |
+{{ .Files.Get "dashboard.json" | indent 4 }}
+{{- end }}

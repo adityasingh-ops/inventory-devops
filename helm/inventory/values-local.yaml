@@ -1,0 +1,9 @@
+# For minikube: use images built locally with `minikube image build`
+backend:
+  image: inventory-backend
+  tag: local
+  pullPolicy: Never
+frontend:
+  image: inventory-frontend
+  tag: local
+  pullPolicy: Never

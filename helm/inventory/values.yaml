@@ -1,0 +1,31 @@
+replicaCount: 2
+
+backend:
+  image: ghcr.io/YOUR_GITHUB_USERNAME/inventory-backend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+frontend:
+  image: ghcr.io/YOUR_GITHUB_USERNAME/inventory-frontend
+  tag: latest
+  pullPolicy: IfNotPresent
+
+postgres:
+  database: inventory
+  username: inventory
+  password: inventory
+  storageClass: ""   # empty = cluster default
+  storage: 1Gi
+
+ingress:
+  enabled: true
+  className: nginx
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  cpuPercent: 50
+
+monitoring:
+  enabled: true      # ServiceMonitor + Grafana dashboard (only if Prometheus Operator is installed)

@@ -1,0 +1,3 @@
+# For AWS EKS: gp2 is the EBS StorageClass EKS creates (not marked default on new clusters)
+postgres:
+  storageClass: gp2

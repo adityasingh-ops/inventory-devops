@@ -1,0 +1,14 @@
+# Values for the kube-prometheus-stack Helm chart (Prometheus + Grafana)
+prometheus:
+  prometheusSpec:
+    # pick up ServiceMonitors from every namespace, not only this chart's
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+
+grafana:
+  adminPassword: admin
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: ALL

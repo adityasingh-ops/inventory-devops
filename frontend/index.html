@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Inventory</title>
+  </head>
+  <body>
+    <main>
+      <h1>📦 Inventory</h1>
+      <form id="item-form">
+        <input id="name" placeholder="Item name" required />
+        <input id="quantity" type="number" min="0" value="1" />
+        <button type="submit">Add</button>
+      </form>
+      <p id="error"></p>
+      <ul id="items"></ul>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

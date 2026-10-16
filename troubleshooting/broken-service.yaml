@@ -1,0 +1,11 @@
+# Lab 2: selector matches no pods -> Service has no endpoints
+apiVersion: v1
+kind: Service
+metadata:
+  name: broken-service
+  namespace: inventory
+spec:
+  selector: { app: label-that-does-not-exist }
+  ports:
+    - port: 3000
+      targetPort: 3000

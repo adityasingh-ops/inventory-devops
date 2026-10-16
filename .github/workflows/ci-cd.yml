@@ -58,31 +58,43 @@ jobs:
           docker push $BACKEND_IMAGE
           docker push $FRONTEND_IMAGE
 
-  # 3) DEPLOY: helm upgrade on EKS (only runs when AWS secrets are configured)
+  # 3) DEPLOY: install the Helm chart on a throwaway Kubernetes (kind) cluster
+  #    inside the CI runner and smoke-test it. Free - no cloud account needed.
   deploy:
     needs: build-scan-push
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_REGION: ap-south-1
-      CLUSTER_NAME: inventory-eks
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
+      - name: Set image names
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "BACKEND=ghcr.io/$OWNER/inventory-backend" >> $GITHUB_ENV
+          echo "FRONTEND=ghcr.io/$OWNER/inventory-frontend" >> $GITHUB_ENV
+      - name: Pull the images CI just pushed
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull $BACKEND:${{ github.sha }}
+          docker pull $FRONTEND:${{ github.sha }}
+      - name: Create Kubernetes cluster (kind)
+        uses: helm/kind-action@v1
+      - uses: azure/setup-helm@v4
       - name: Deploy with Helm
         run: |
-          if [ -z "$AWS_ACCESS_KEY_ID" ]; then
-            echo "AWS secrets not set - skipping deploy"; exit 0
-          fi
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          aws eks update-kubeconfig --name $CLUSTER_NAME --region $AWS_REGION
-          helm upgrade --install inventory ./helm/inventory \
-            -n inventory --create-namespace \
-            -f helm/inventory/values-eks.yaml \
-            --set backend.image=ghcr.io/$OWNER/inventory-backend \
-            --set frontend.image=ghcr.io/$OWNER/inventory-frontend \
-            --set backend.tag=${{ github.sha }} \
-            --set frontend.tag=${{ github.sha }} \
+          kind load docker-image $BACKEND:${{ github.sha }} $FRONTEND:${{ github.sha }} --name chart-testing
+          kubectl apply -f k8s/namespace.yaml
+          helm upgrade --install inventory ./helm/inventory -n inventory \
+            --set backend.image=$BACKEND --set backend.tag=${{ github.sha }} \
+            --set frontend.image=$FRONTEND --set frontend.tag=${{ github.sha }} \
+            --set ingress.enabled=false \
             --wait --timeout 5m
-          kubectl get pods -n inventory
+          kubectl get pods,svc,hpa -n inventory
+          helm list -n inventory
+      - name: Smoke test
+        run: |
+          kubectl port-forward -n inventory svc/frontend 8080:8080 &
+          sleep 5
+          curl -sf -X POST localhost:8080/api/items -H 'Content-Type: application/json' -d '{"name":"ci-test","quantity":1}'
+          curl -sf localhost:8080/api/items | grep ci-test
